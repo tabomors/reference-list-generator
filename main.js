@@ -1,42 +1,59 @@
 
-const puppeteer = require('puppeteer')
-const $ = require('cheerio')
-const dayjs = require('dayjs');
+const puppeteer = require('puppeteer');
+const $ = require('cheerio');
+const dayjs = require('dayjs'); // TODO: remove it
 const fs = require('fs');
-const url = 'https://isbndb.com/search/books/insurance';
-const url1 = 'https://isbndb.com/search/books/insurance';
+const { formatBooksData, getRandomPagesCount } = require('./utils');
 
-const POSSIBLE_PAGES_COUNT = [215, 220, 230, 234, 265, 275, 305, 310, 325, 345, 375, 410, 420];
+const { urls = [], startIndex = 1 } = JSON.parse(fs.readFileSync('./config.json', 'utf-8'));
 
-const getRandomPagesCount = () => POSSIBLE_PAGES_COUNT[Math.floor(Math.random() * POSSIBLE_PAGES_COUNT.length)]; 
-
-// TODO: add parallel requests
-(async () => {
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
+const scrapData = async (page, url) => {
   await page.goto(url);
   await page.click('a#load-more-search-results');
+  await page.waitFor(2000);
   await page.click('a#load-more-search-results');
+  await page.waitFor(2000);
   await page.click('a#load-more-search-results');
-  await page.waitFor(4000);
+  await page.waitFor(2000);
+  const bookItemsHtml = await page.$$eval('.row.book-row', items => items.map(item => item.innerHTML));
+  const data = bookItemsHtml.map(item => {
+    const title = $('h2.search-result-title a', item).text().trim();
+    const author = $('dt', item).eq(0).children().contents().toArray()[1].data;
+    const [, date] = $('dt', item).eq(-2).text().split(': ');
+    const formatedDate = dayjs(date).format('YYYY');
+    const pagesCount = getRandomPagesCount();
+    // TODO: add Publisher
+    return { title, author, date: formatedDate, pagesCount, url };
+  });
+  return data;
+}
 
+(async () => {
+  const browser = await puppeteer.launch();
+  const promises = urls.map(async url => {
+    const newPage = await browser.newPage();
+    return scrapData(newPage, url);
+  });
   try {
-    const bookItemsHtml = await page.$$eval('.row.book-row', items => items.map(item => item.innerHTML));
-    console.log('books count: ', bookItemsHtml.length);
-    const res = bookItemsHtml.map(item => { 
-      const title = $('h2.search-result-title a', item).text().trim();
-      const author = $('dt', item).eq(0).children().contents().toArray()[1].data;
-      const [, date] = $('dt', item).eq(-2).text().split(': ');
-      const formatedDate = dayjs(date).format('YYYY');
-      const pagesCount = getRandomPagesCount();
-      return { title, author, date: formatedDate, pagesCount };
-    });
-    console.log(res);
-  } catch (e) {
-    console.log ('Error:', e);
-    process.exit(1);
-  }
-  console.log('end of script');
-  browser.close();
-})();
+    const booksData = await Promise.all(promises);
+    const formatedBooksData = formatBooksData(booksData, startIndex);
 
+    fs.writeFile('reference-list.txt', formatedBooksData, e => {
+      if (e) throw err;
+      console.log('The file has been saved!');
+    });
+  } catch (e) {
+    throw e;
+  }
+  browser.close();
+})()
+  .catch(e => { console.error('Catching...', e) });
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.log('Unhandled Rejection at:', reason.stack)
+});
+
+process.on('uncaughtException', e => {
+  console.error('Something went wrong...', e);
+  process.exit(1);
+});
